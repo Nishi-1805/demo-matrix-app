@@ -33,7 +33,7 @@ import Login from './pages/Login';
 import Chat from './pages/Chat';
 import SignUp from "./pages/SignUp";
 import Navigation from './components/Navigation';
-import PlatformIntegration from './components/PlatformIntegration';
+import WhatsAppIntegration from './components/PlatformIntegration';
 
 function App() {
   return (
@@ -45,7 +45,7 @@ function App() {
           <Route path="/signup" element={<SignUp />} />
           <Route path="/login" element={<Login />} />
           <Route path="/chat" element={<Chat />} />
-          <Route path="/platforms" element={<PlatformIntegration />} />
+          <Route path="/whatsapp" component={WhatsAppIntegration} />
         </Routes>
       </Router>
     </Provider>

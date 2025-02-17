@@ -3,6 +3,7 @@ class BridgeService {
     constructor(matrixService) {
       this.matrixService = matrixService;
       this.baseUrl = 'https://matrix-client.matrix.org/_matrix/client/v3';
+      this.whatsappBridgeUrl = 'http://localhost:29318';
     }
   
     // General method to join a bridged room
@@ -18,78 +19,114 @@ class BridgeService {
         throw error;
       }
     }
-  
-    // Telegram Bridge
-    async connectTelegram(telegramUsername) {
-      try {
-        // Join Telegram bridge bot room
-        const bridgeRoom = await this.joinBridgedRoom('#telegram:t2bot.io');
-        
-        // Send connection command to bridge bot
-        await this.matrixService.getClient().sendMessage(bridgeRoom.roomId, {
-          msgtype: 'm.text',
-          body: `!telegram connect ${telegramUsername}`
-        });
-  
-        return bridgeRoom;
-      } catch (error) {
-        console.error('Failed to connect Telegram:', error);
-        throw error;
-      }
+
+  async connectDiscord() {
+    try {
+      // Create a room specifically for Discord bridge
+      const roomId = await this.matrixService.connectToBridge('discord');
+      
+      // Send command to bridge bot
+      await this.matrixService.getClient().sendTextMessage(roomId, '!discord link');
+      
+      // Return room ID for further use
+      return {
+        success: true,
+        roomId: roomId,
+        message: 'Discord connection initiated. Please check your Discord for authorization.'
+      };
+    } catch (error) {
+      console.error('Failed to connect Discord:', error);
+      throw new Error('Discord connection failed. Please try again.');
     }
-  
-    // Discord Bridge
-    async connectDiscord() {
-      try {
-        // Join Discord bridge bot room
-        const bridgeRoom = await this.joinBridgedRoom('#discord:matrix.org');
-        
-        // Send connection command
-        await this.matrixService.getClient().sendMessage(bridgeRoom.roomId, {
-          msgtype: 'm.text',
-          body: '!discord link'
-        });
-  
-        return bridgeRoom;
-      } catch (error) {
-        console.error('Failed to connect Discord:', error);
-        throw error;
-      }
-    }
-  
-    // WhatsApp Bridge
-    async connectWhatsApp() {
-      try {
-        const bridgeRoom = await this.joinBridgedRoom('#whatsapp:maunium.net');
-        
-        await this.matrixService.getClient().sendMessage(bridgeRoom.roomId, {
+  }
+
+  async connectWhatsApp() {
+    try {
+      // Create a dedicated room for WhatsApp bridge
+      const roomId = await this.matrixService.connectToBridge('whatsapp');
+      
+      // Join the WhatsApp control room
+      await this.matrixService.getClient().joinRoom('#whatsapp:matrix.org');
+
+      // Send the link command to start WhatsApp connection
+      await this.matrixService.getClient().sendEvent(
+        roomId,
+        'm.room.message',
+        {
           msgtype: 'm.text',
           body: '!wa link'
-        });
-  
-        return bridgeRoom;
-      } catch (error) {
-        console.error('Failed to connect WhatsApp:', error);
-        throw error;
-      }
+        }
+      );
+
+      // Set up event listener for QR code
+      this.matrixService.getClient().on("Room.timeline", (event) => {
+        if (event.getType() === 'm.room.message') {
+          const content = event.getContent();
+          if (content.body && content.body.includes('QR code')) {
+            // Extract and display QR code
+            this.handleWhatsAppQR(content.body);
+          }
+          if (content.body && content.body.includes('Successfully logged in')) {
+            // Handle successful login
+            this.handleWhatsAppSuccess();
+          }
+        }
+      });
+
+      return {
+        success: true,
+        roomId,
+        message: 'WhatsApp connection initiated. Please wait for QR code.'
+      };
+    } catch (error) {
+      console.error('Failed to connect WhatsApp:', error);
+      throw new Error('WhatsApp connection failed: ' + error.message);
     }
-  
-    // Signal Bridge
-    async connectSignal(phoneNumber) {
-      try {
-        const bridgeRoom = await this.joinBridgedRoom('#signal:matrix.org');
-        
-        await this.matrixService.getClient().sendMessage(bridgeRoom.roomId, {
+  }
+
+  async handleWhatsAppQR(qrData) {
+    // Emit event for QR code display
+    this.matrixService.emit('whatsapp_qr', qrData);
+  }
+
+  async handleWhatsAppSuccess() {
+    // Emit success event
+    this.matrixService.emit('whatsapp_connected');
+    
+    // Start syncing chats
+    await this.syncWhatsAppChats();
+  }
+
+  async syncWhatsAppChats() {
+    try {
+      // Send sync command
+      await this.matrixService.getClient().sendEvent(
+        '#whatsapp:matrix.org',
+        'm.room.message',
+        {
           msgtype: 'm.text',
-          body: `!signal link ${phoneNumber}`
-        });
-  
-        return bridgeRoom;
-      } catch (error) {
-        console.error('Failed to connect Signal:', error);
-        throw error;
-      }
+          body: '!wa sync'
+        }
+      );
+    } catch (error) {
+      console.error('Failed to sync WhatsApp chats:', error);
     }
+  }
+
+  async getWhatsAppChats() {
+    try {
+      const rooms = await this.matrixService.getRooms();
+      return rooms.filter(room => {
+        const stateEvents = room.currentState?.getStateEvents('m.bridge');
+        return stateEvents?.some(event => 
+          event.getContent().protocol === 'whatsapp'
+        );
+      });
+    } catch (error) {
+      console.error('Failed to get WhatsApp chats:', error);
+      return [];
+    }
+  }
   
     // Get list of connected platforms
     async getConnectedPlatforms() {

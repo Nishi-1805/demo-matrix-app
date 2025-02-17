@@ -48,6 +48,7 @@
 
 // matrixService.js
 import { createClient } from "matrix-js-sdk";
+import BridgeService from './bridgeService';
 
 class MatrixService {
   constructor() {
@@ -55,6 +56,7 @@ class MatrixService {
     this.accessToken = localStorage.getItem('matrix_access_token');
     this.userId = localStorage.getItem('matrix_user_id');
     this.client = null;
+    this.bridgeService = null;
     
     if (this.accessToken) {
       this.initClient();
@@ -68,7 +70,12 @@ class MatrixService {
         accessToken: this.accessToken,
         userId: this.userId
       });
+      this.bridgeService = new BridgeService(this);
     }
+  }
+
+  getBridgeService() {
+    return this.bridgeService;
   }
 
   async login(username, password) {
@@ -227,15 +234,6 @@ class MatrixService {
     }
   }
 
-  getLastMessage(room) {
-    const events = room.timeline;
-    if (events && events.length > 0) {
-      const lastEvent = events[events.length - 1];
-      return lastEvent.getContent().body || '';
-    }
-    return '';
-  }
-
   getRoomType(room) {
     const stateEvents = room.currentState.getStateEvents('m.room.type');
     if (stateEvents.length > 0) {
@@ -265,6 +263,194 @@ class MatrixService {
     } catch (error) {
       console.error('Failed to get room messages:', error);
       throw error;
+    }
+  }
+
+  async getBridgeLinks() {
+    try {
+      if (!this.client) {
+        throw new Error('Matrix client not initialized');
+      }
+
+      // First check which bridges are actually available
+      const response = await fetch(`${this.baseUrl}/_matrix/client/v3/thirdparty/protocols`, {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to get bridge protocols: ${response.status}`);
+      }
+
+      const protocols = await response.json();
+      
+      // Define all potential platforms
+const platformConfigs = {
+  irc: {
+    name: 'IRC',
+    networkList: ['libera', 'OFTC', 'freenode'],
+    description: 'Connect to IRC networks',
+    setupInstructions: 'IRC bridge is available by default on matrix.org',
+    isAvailable: true  // Add this line
+  },
+  discord: {
+    name: 'Discord',
+    description: 'Connect to Discord servers',
+    setupInstructions: 'Connect your Discord account',
+    isAvailable: true  // Change this to true
+  },
+  whatsapp: {
+    name: 'WhatsApp',
+    description: 'Connect to WhatsApp',
+    setupInstructions: 'Scan QR code with WhatsApp',
+    isAvailable: true  // Change this to true
+  },
+  // ... other platforms ...
+};
+
+      // Transform available protocols into bridge information
+      const bridges = Object.entries(protocols).map(([protocol, info]) => {
+        const configuredPlatform = platformConfigs[protocol] || {};
+        return {
+          name: configuredPlatform.name || info.fields?.friendly_name || protocol,
+          protocol: protocol,
+          description: configuredPlatform.description || info.desc || `Connect to ${protocol}`,
+          networkList: configuredPlatform.networkList || [],
+          isAvailable: true,
+          setupInstructions: configuredPlatform.setupInstructions
+        };
+      });
+
+      // Add unavailable bridges with setup instructions
+      Object.entries(platformConfigs)
+        .filter(([protocol]) => !protocols[protocol])
+        .forEach(([protocol, config]) => {
+          bridges.push({
+            name: config.name,
+            protocol: protocol,
+            description: config.description,
+            networkList: config.networkList || [],
+            isAvailable: false,
+            setupInstructions: config.setupInstructions
+          });
+        });
+
+      return bridges;
+    } catch (error) {
+      console.error('Failed to get bridge links:', error);
+      return [];
+    }
+  }
+
+  async connectToBridge(protocol, networkName = null) {
+    try {
+      if (!this.client) {
+        throw new Error('Matrix client not initialized');
+      }
+
+      // Create a bridge-specific room
+      const roomResponse = await this.client.createRoom({
+        visibility: 'private',
+        name: `${protocol} Bridge`,
+        topic: `Bridge to ${protocol}${networkName ? ` (${networkName})` : ''}`,
+        initial_state: [
+          {
+            type: 'm.room.bridging',
+            state_key: protocol,
+            content: {
+              protocol,
+              network: networkName
+            }
+          }
+        ]
+      });
+
+      return roomResponse.room_id;
+    } catch (error) {
+      console.error(`Failed to connect to ${protocol} bridge:`, error);
+      throw error;
+    }
+  }
+
+  async getBridgedChats() {
+    try {
+      if (!this.client) {
+        throw new Error('Matrix client not initialized');
+      }
+
+      const rooms = await this.getRooms();
+      
+      // Filter and format bridged rooms
+      const bridgedChats = rooms
+        .filter(room => {
+          const roomObj = this.client.getRoom(room.id);
+          const bridgeState = roomObj?.currentState.getStateEvents('m.room.bridging');
+          return bridgeState && bridgeState.length > 0;
+        })
+        .map(room => {
+          const roomObj = this.client.getRoom(room.id);
+          const bridgeState = roomObj.currentState.getStateEvents('m.room.bridging')[0];
+          const protocol = bridgeState?.getContent().protocol;
+          
+          return {
+            id: room.id,
+            name: room.name,
+            protocol: protocol,
+            lastMessage: this.getLastMessage(roomObj),
+            participants: this.getRoomParticipants(room.id)
+          };
+        });
+
+      return bridgedChats;
+    } catch (error) {
+      console.error('Failed to get bridged chats:', error);
+      return [];
+    }
+  }
+
+  async getRoomParticipants(roomId) {
+    try {
+      const response = await fetch(`${this.baseUrl}/_matrix/client/v3/rooms/${roomId}/members`, {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to get room members: ${response.status}`);
+      }
+
+      const { chunk } = await response.json();
+      return chunk
+        .filter(event => event.content.membership === 'join')
+        .map(event => ({
+          userId: event.state_key,
+          displayName: event.content.displayname || event.state_key
+        }));
+    } catch (error) {
+      console.error('Failed to get room participants:', error);
+      return [];
+    }
+  }
+
+  getLastMessage(room) {
+    try {
+      const timeline = room.timeline;
+      const messages = timeline
+        .filter(event => event.getType() === 'm.room.message')
+        .map(event => ({
+          content: event.getContent().body,
+          sender: event.getSender(),
+          timestamp: event.getTs()
+        }));
+      
+      return messages[messages.length - 1] || null;
+    } catch (error) {
+      console.error('Failed to get last message:', error);
+      return null;
     }
   }
 
